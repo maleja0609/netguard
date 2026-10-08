@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { StatCard } from '../components/StatCard';
 import { DeviceTable } from '../components/DeviceTable';
 import { createScan, getScanHistory } from '../api/scans';
@@ -239,14 +239,61 @@ export function Dashboard() {
   const [resultado, setResultado] = useState<ScanResult | null>(null);
   const [anterior, setAnterior] = useState<ScanHistoryItem | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [redDisponible, setRedDisponible] = useState(() => navigator.onLine);
+  const [cargandoDatos, setCargandoDatos] = useState(() => navigator.onLine);
   const [cargando, setCargando] = useState(false);
   const [progreso, setProgreso] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [, setNow] = useState(() => Date.now());
 
-  useEffect(() => {
-    cargarDashboard();
+  const aplicarHistorial = useCallback((historial: ScanHistoryItem[]) => {
+    if (historial.length > 0) {
+      setResultado(toScanResult(historial[0]));
+      setAnterior(historial[1] ?? null);
+    }
   }, []);
+
+  const cargarDashboard = useCallback(async () => {
+    try {
+      const [historial, inventario] = await Promise.all([getScanHistory(), getDevices()]);
+      aplicarHistorial(historial);
+      setDevices(inventario);
+      setError(null);
+    } catch (err) {
+      const mensaje = err instanceof ApiError ? err.message : 'Ocurrió un error inesperado';
+      setError(mensaje);
+      console.error('Error cargando dashboard:', err);
+    } finally {
+      setCargandoDatos(false);
+    }
+  }, [aplicarHistorial]);
+
+  useEffect(() => {
+    const actualizarEstadoDeRed = () => {
+      const disponible = navigator.onLine;
+      setRedDisponible(disponible);
+      if (disponible) {
+        setCargandoDatos(true);
+        void cargarDashboard();
+      } else {
+        setCargandoDatos(false);
+        setCargando(false);
+        setProgreso(0);
+      }
+    };
+
+    window.addEventListener('online', actualizarEstadoDeRed);
+    window.addEventListener('offline', actualizarEstadoDeRed);
+    const initialLoad = window.setTimeout(() => {
+      if (navigator.onLine) void cargarDashboard();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(initialLoad);
+      window.removeEventListener('online', actualizarEstadoDeRed);
+      window.removeEventListener('offline', actualizarEstadoDeRed);
+    };
+  }, [cargarDashboard]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -265,24 +312,13 @@ export function Dashboard() {
     return () => window.clearInterval(id);
   }, [cargando]);
 
-  const aplicarHistorial = (historial: ScanHistoryItem[]) => {
-    if (historial.length > 0) {
-      setResultado(toScanResult(historial[0]));
-      setAnterior(historial[1] ?? null);
-    }
-  };
-
-  const cargarDashboard = async () => {
-    try {
-      const [historial, inventario] = await Promise.all([getScanHistory(), getDevices()]);
-      aplicarHistorial(historial);
-      setDevices(inventario);
-    } catch (err) {
-      console.error('Error cargando dashboard:', err);
-    }
-  };
-
   const escanearRed = async () => {
+    if (!navigator.onLine) {
+      setRedDisponible(false);
+      setError(null);
+      return;
+    }
+
     setCargando(true);
     setProgreso(0);
     setError(null);
@@ -349,6 +385,60 @@ export function Dashboard() {
 
   const confiablesAccent =
     totalInventario === 0 ? 'slate' : confiables === totalInventario ? 'green' : confiables === 0 ? 'red' : 'amber';
+
+  if (!redDisponible) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-surface p-8">
+        <div className="max-w-lg text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10 text-amber-400">
+            <IconWifi />
+          </div>
+          <h1 className="mb-3 text-2xl font-bold text-white">Conéctate a una red</h1>
+          <p className="text-muted">
+            NetGuard necesita una conexión de red activa para detectar dispositivos. Cuando te
+            conectes, podrás iniciar el escaneo.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (cargandoDatos) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-surface p-8">
+        <p className="text-muted">Comprobando si hay escaneos guardados...</p>
+      </div>
+    );
+  }
+
+  if (!resultado) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-surface p-8">
+        <div className="max-w-lg text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <IconWifi />
+          </div>
+          <h1 className="mb-3 text-2xl font-bold text-white">Aún no hay escaneos</h1>
+          <p className="mb-6 text-muted">
+            Conéctate a la red que quieres evaluar e inicia un escaneo para ver aquí los
+            dispositivos detectados.
+          </p>
+          {error && (
+            <div className="mb-6 rounded-lg border border-danger/30 bg-danger/10 p-4 text-left text-sm text-danger">
+              {error}
+            </div>
+          )}
+          <button
+            onClick={escanearRed}
+            disabled={cargando}
+            className="rounded-lg bg-primary px-6 py-3 text-sm font-medium text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-border disabled:text-muted"
+          >
+            {cargando ? 'Escaneando...' : 'Iniciar primer escaneo'}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 bg-surface min-h-full">
